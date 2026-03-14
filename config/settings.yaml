@@ -1,0 +1,15 @@
+symbols:
+  - SPY
+  - QQQ
+  - TQQQ
+
+sma_short: 10
+sma_long: 50
+momentum_period: 10
+momentum_threshold: 0.005
+
+risk_per_trade: 0.02
+max_daily_loss: 0.03
+
+use_trailing_stop: true
+trailing_stop_pct: 0.01  # 1%
