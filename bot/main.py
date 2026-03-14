@@ -2,7 +2,11 @@ import os
 import yaml
 
 # Mode selection: 'live' or 'backtest'
-MODE = os.environ.get("BOT_MODE", "live")  # default is live
+# Load config first
+with open("config/settings.yaml") as f:
+    cfg = yaml.safe_load(f)
+
+MODE = cfg.get("mode", "live")
 
 if MODE == "backtest":
     from bot.backtest import run_backtest
