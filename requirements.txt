@@ -1,0 +1,4 @@
+alpaca-trade-api==4.0.0
+pandas==2.1.1
+PyYAML==6.0
+matplotlib==3.8.0
