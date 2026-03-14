@@ -4,3 +4,4 @@ __pycache__/
 *.pyd
 .Python
 logs/
+backtest_equity_curve.png
