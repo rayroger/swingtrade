@@ -1,4 +1,5 @@
 import time
+import yfinance as yf
 
 def download_data(symbol):
     for attempt in range(3):
