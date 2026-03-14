@@ -1,5 +1,5 @@
 alpaca-trade-api==3.2.0
 pandas==2.1.1
-PyYAML==6.0
+PyYAML==6.0.1
 matplotlib==3.8.0
 yfinance==0.2.28
