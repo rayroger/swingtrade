@@ -1,28 +1,43 @@
+name: Swing Trading Bot
+
 on:
-  workflow_dispatch:
   schedule:
-    # every hour during US market hours
-    - cron: "30 13-20 * * 1-5"  # UTC 13:30–20:00 = 09:30–16:00 ET
+    # hourly during US market hours
+    - cron: "30 13-20 * * 1-5"
+
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Bot mode"
+        required: false
+        default: "live"
+        type: choice
+        options:
+          - live
+          - backtest
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
 
+    env:
+      BOT_MODE: ${{ github.event.inputs.mode || 'live' }}
+
     steps:
-    - name: Checkout repo
-      uses: actions/checkout@v4
+      - name: Checkout repo
+        uses: actions/checkout@v4
 
-    - name: Setup Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: "3.11"
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
 
-    - name: Install dependencies
-      run: pip install -r requirements.txt
+      - name: Install dependencies
+        run: pip install -r requirements.txt
 
-    - name: Run trading bot
-      run: python bot/main.py
-      env:
-        ALPACA_KEY: ${{ secrets.ALPACA_KEY }}
-        ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
-  
+      - name: Run trading bot
+        run: python bot/main.py
+        env:
+          ALPACA_KEY: ${{ secrets.ALPACA_KEY }}
+          ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
+          BOT_MODE: ${{ env.BOT_MODE }}
