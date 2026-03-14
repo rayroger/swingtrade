@@ -1,14 +1,20 @@
 import os
 import yaml
 
-# Mode selection: 'live' or 'backtest'
-# Load config first
+# Load config
 with open("config/settings.yaml") as f:
     cfg = yaml.safe_load(f)
 
-MODE = cfg.get("mode", "live")
+# Mode priority:
+# 1) GitHub workflow parameter
+# 2) settings.yaml
+# 3) default = live
 
-if MODE == "backtest":
+mode = os.environ.get("BOT_MODE") or cfg.get("mode", "live")
+
+print(f"Running bot in mode: {mode}")
+
+if mode == "backtest":
     from bot.backtest import run_backtest
     run_backtest()
 else:
