@@ -1,3 +1,5 @@
+mode: live   # live or backtest
+
 symbols:
   - SPY
   - QQQ
@@ -12,4 +14,4 @@ risk_per_trade: 0.02
 max_daily_loss: 0.03
 
 use_trailing_stop: true
-trailing_stop_pct: 0.01  # 1%
+trailing_stop_pct: 0.01
