@@ -14,7 +14,7 @@ def _flatten_columns(df):
 def _generate_synthetic_data(symbol, periods=500):
     """Generate synthetic OHLCV data for CI/testing when live download fails."""
     np.random.seed(abs(hash(symbol)) % (2**32))
-    dates = pd.date_range(start="2024-01-01", periods=periods, freq="h")
+    dates = pd.date_range(start="2025-01-01", periods=periods, freq="h")
     close = 400.0 * np.exp(np.cumsum(np.random.normal(0, 0.005, periods)))
     high = close * (1 + np.abs(np.random.normal(0, 0.003, periods)))
     low = close * (1 - np.abs(np.random.normal(0, 0.003, periods)))
@@ -32,8 +32,8 @@ def download_data(symbol):
         try:
             df = yf.download(
                 symbol,
-                start="2024-01-01",
-                end="2024-12-31",
+                start="2025-01-01",
+                end="2025-12-31",
                 interval="1h",
                 progress=False,
                 auto_adjust=True,
@@ -48,7 +48,7 @@ def download_data(symbol):
     # Fallback: try yf.Ticker().history()
     try:
         ticker = yf.Ticker(symbol)
-        df = ticker.history(start="2024-01-01", end="2024-12-31", interval="1h", auto_adjust=True)
+        df = ticker.history(start="2025-01-01", end="2025-12-31", interval="1h", auto_adjust=True)
         df = _flatten_columns(df)
         if df is not None and not df.empty:
             return df
