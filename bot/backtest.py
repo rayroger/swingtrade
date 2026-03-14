@@ -7,7 +7,7 @@ def run_backtest():
     import yfinance as yf
     import matplotlib.pyplot as plt
     import yaml
-    from strategy import compute_indicators, trend_score, generate_signal
+    from bot.strategy import compute_indicators, trend_score, generate_signal
 
     # Load config
     with open("config/settings.yaml") as f:
