@@ -1,3 +1,26 @@
+import time
+
+def download_data(symbol):
+    for attempt in range(3):
+        try:
+            df = yf.download(
+                symbol,
+                start="2023-01-01",
+                end="2023-12-31",
+                interval="1h",
+                progress=False
+            )
+
+            if df is not None and not df.empty:
+                return df
+
+        except Exception as e:
+            print(f"Download failed for {symbol}, retry {attempt+1}: {e}")
+
+        time.sleep(2)
+
+    raise RuntimeError(f"Failed to download data for {symbol}")
+
 def run_backtest():
     """
     Runs backtest for all symbols using config settings.
@@ -23,9 +46,20 @@ def run_backtest():
 
     # Fetch historical data
     hist_data = {}
+    
     for symbol in symbols:
-        df = yf.download(symbol, start="2023-01-01", end="2023-12-31", interval="1h")
-        df = compute_indicators(df, cfg["sma_short"], cfg["sma_long"], cfg["momentum_period"])
+        df = download_data(symbol)
+    
+        # normalize column names
+        df.columns = [c.lower() for c in df.columns]
+    
+        df = compute_indicators(
+            df,
+            cfg["sma_short"],
+            cfg["sma_long"],
+            cfg["momentum_period"]
+        )
+    
         hist_data[symbol] = df
 
     timestamps = hist_data[symbols[0]].index
