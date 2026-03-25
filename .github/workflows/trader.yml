@@ -39,5 +39,4 @@ jobs:
         run: python -m bot.main
         env:
           ALPACA_KEY: ${{ secrets.ALPACA_KEY }}
-          ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
           BOT_MODE: ${{ env.BOT_MODE }}
