@@ -26,14 +26,14 @@ def _generate_synthetic_data(symbol, periods=500):
     )
 
 
-def download_data(symbol):
+def download_data(symbol, start="2022-01-01", end="2025-12-31"):
     # Try yf.download first
     for attempt in range(3):
         try:
             df = yf.download(
                 symbol,
-                start="2025-01-01",
-                end="2025-12-31",
+                start=start,
+                end=end,
                 interval="1h",
                 progress=False,
                 auto_adjust=True,
@@ -49,7 +49,7 @@ def download_data(symbol):
     # Fallback: try yf.Ticker().history()
     try:
         ticker = yf.Ticker(symbol)
-        df = ticker.history(start="2025-01-01", end="2025-12-31", interval="1h", auto_adjust=True)
+        df = ticker.history(start=start, end=end, interval="1h", auto_adjust=True)
         df = _flatten_columns(df)
         if df is not None and not df.empty:
             print(f"[{symbol}] Downloaded {len(df)} bars from yfinance (Ticker.history)")
@@ -89,16 +89,21 @@ def run_backtest():
     use_trailing_stop = cfg.get("use_trailing_stop", False)
     trailing_stop_pct = cfg.get("trailing_stop_pct", 0.01)
     max_daily_loss = cfg.get("max_daily_loss", None)
+    backtest_start = cfg.get("backtest_start", "2022-01-01")
+    backtest_end = cfg.get("backtest_end", "2025-12-31")
+    commission_per_trade = cfg.get("commission_per_trade", 0.0)
+    slippage_pct = cfg.get("slippage_pct", 0.0)
+    min_holding_bars = cfg.get("min_holding_bars", 0)
 
     portfolio = {"equity_curve": [], "trades": []}
-    # positions: {symbol: {"qty": int, "entry_price": float, "peak_price": float}}
+    # positions: {symbol: {"qty": int, "entry_price": float, "peak_price": float, "entry_bar_idx": int}}
     positions = {}
 
     # Fetch historical data
     hist_data = {}
 
     for symbol in symbols:
-        df = download_data(symbol)
+        df = download_data(symbol, start=backtest_start, end=backtest_end)
 
         # normalize column names
         df.columns = [c.lower() for c in df.columns]
@@ -116,7 +121,7 @@ def run_backtest():
     current_day = None
     day_start_equity = equity
 
-    for t in timestamps:
+    for bar_idx, t in enumerate(timestamps):
         # Track daily starting equity for max daily loss check
         t_date = pd.Timestamp(t).date()
         if t_date != current_day:
@@ -169,55 +174,70 @@ def run_backtest():
                     exits.append((symbol, current_price))
             for symbol, exit_price in exits:
                 p = positions[symbol]
-                pnl = p["qty"] * (exit_price - p["entry_price"])
+                exec_price = exit_price * (1 - slippage_pct)
+                pnl = p["qty"] * (exec_price - p["entry_price"]) - commission_per_trade
                 equity += pnl
                 portfolio["trades"].append({
                     "timestamp": t, "symbol": symbol, "action": "SELL",
-                    "price": exit_price, "qty": p["qty"], "pnl": pnl,
+                    "price": exec_price, "qty": p["qty"], "pnl": pnl,
                     "exit_reason": "trailing_stop",
                 })
-                positions[symbol] = {"qty": 0, "entry_price": 0, "peak_price": 0}
+                positions[symbol] = {"qty": 0, "entry_price": 0, "peak_price": 0, "entry_bar_idx": -1}
 
         # Check position and generate signal
-        pos = positions.get(best_symbol, {"qty": 0, "entry_price": 0, "peak_price": 0})
+        pos = positions.get(best_symbol, {"qty": 0, "entry_price": 0, "peak_price": 0, "entry_bar_idx": -1})
         signal = generate_signal(last_row, 1 if pos["qty"] > 0 else 0,
                                  momentum_threshold=momentum_threshold)
 
+        # Suppress signal-based SELL until minimum holding period is satisfied
+        # (trailing stop always fires regardless, handled above)
+        if signal == "SELL" and pos["qty"] > 0:
+            bars_held = bar_idx - pos.get("entry_bar_idx", bar_idx)
+            if bars_held < min_holding_bars:
+                signal = None
+
         # Execute virtual trade
         if signal == "BUY" and pos["qty"] == 0:
-            qty = int(equity * risk_per_trade / last_row["close"])
+            exec_price = last_row["close"] * (1 + slippage_pct)
+            qty = int(equity * risk_per_trade / exec_price)
             if qty > 0:
-                entry_price = last_row["close"]
-                positions[best_symbol] = {"qty": qty, "entry_price": entry_price, "peak_price": entry_price}
+                equity -= commission_per_trade
+                positions[best_symbol] = {
+                    "qty": qty,
+                    "entry_price": exec_price,
+                    "peak_price": exec_price,
+                    "entry_bar_idx": bar_idx,
+                }
                 portfolio["trades"].append({
                     "timestamp": t, "symbol": best_symbol, "action": "BUY",
-                    "price": entry_price, "qty": qty,
+                    "price": exec_price, "qty": qty,
                 })
         elif signal == "SELL" and pos["qty"] > 0:
-            exit_price = last_row["close"]
-            pnl = pos["qty"] * (exit_price - pos["entry_price"])
+            exec_price = last_row["close"] * (1 - slippage_pct)
+            pnl = pos["qty"] * (exec_price - pos["entry_price"]) - commission_per_trade
             equity += pnl
             portfolio["trades"].append({
                 "timestamp": t, "symbol": best_symbol, "action": "SELL",
-                "price": exit_price, "qty": pos["qty"], "pnl": pnl,
+                "price": exec_price, "qty": pos["qty"], "pnl": pnl,
                 "exit_reason": "signal",
             })
-            positions[best_symbol] = {"qty": 0, "entry_price": 0, "peak_price": 0}
+            positions[best_symbol] = {"qty": 0, "entry_price": 0, "peak_price": 0, "entry_bar_idx": -1}
 
         portfolio["equity_curve"].append({"timestamp": t, "equity": _equity_snapshot()})
 
     # Close any remaining open positions at the last available price
     for symbol, p in list(positions.items()):
         if p["qty"] > 0:
-            last_price = hist_data[symbol].iloc[-1]["close"]
-            pnl = p["qty"] * (last_price - p["entry_price"])
+            last_close = hist_data[symbol].iloc[-1]["close"]
+            exec_price = last_close * (1 - slippage_pct)
+            pnl = p["qty"] * (exec_price - p["entry_price"]) - commission_per_trade
             equity += pnl
             portfolio["trades"].append({
                 "timestamp": timestamps[-1], "symbol": symbol, "action": "SELL",
-                "price": last_price, "qty": p["qty"], "pnl": pnl,
+                "price": exec_price, "qty": p["qty"], "pnl": pnl,
                 "exit_reason": "end_of_backtest",
             })
-            positions[symbol] = {"qty": 0, "entry_price": 0, "peak_price": 0}
+            positions[symbol] = {"qty": 0, "entry_price": 0, "peak_price": 0, "entry_bar_idx": -1}
 
     eq_df = pd.DataFrame(portfolio["equity_curve"])
     eq_df.set_index("timestamp", inplace=True)
@@ -239,6 +259,15 @@ def run_backtest():
 
     print(f"\n--- Backtest Results ---")
     print(f"Final Equity: {equity:.2f}  (return: {(equity - initial_equity) / initial_equity * 100:.2f}%)")
+
+    # Buy-and-hold SPY benchmark
+    if "SPY" in hist_data:
+        spy_close = hist_data["SPY"]["close"].dropna()
+        if len(spy_close) >= 2:
+            spy_bh_return = (spy_close.iloc[-1] - spy_close.iloc[0]) / spy_close.iloc[0]
+            spy_bh_equity = initial_equity * (1 + spy_bh_return)
+            print(f"Buy & Hold SPY:  {spy_bh_equity:.2f}  (return: {spy_bh_return * 100:.2f}%)")
+
     print(f"Trades: {total_buys} buys, {total_sells} sells ({min(total_buys, total_sells)} completed buy-sell pairs)")
     print(f"Win Rate: {win_rate*100:.2f}%  ({wins} winning / {total_sells} closed trades)")
     print(f"Max Drawdown: {max_drawdown*100:.2f}%")
@@ -258,7 +287,16 @@ def run_backtest():
 
     # Plot equity curve
     plt.figure(figsize=(12, 6))
-    plt.plot(eq_df.index, eq_df["equity"], label="Equity Curve")
+    plt.plot(eq_df.index, eq_df["equity"], label="Strategy", color="steelblue")
+
+    # Buy-and-hold SPY benchmark line
+    if "SPY" in hist_data:
+        spy_close = hist_data["SPY"]["close"].reindex(eq_df.index, method="ffill").dropna()
+        if len(spy_close) >= 2:
+            spy_bh_curve = initial_equity * spy_close / spy_close.iloc[0]
+            plt.plot(spy_bh_curve.index, spy_bh_curve.values,
+                     label="Buy & Hold SPY", linestyle="--", color="gray")
+
     plt.xlabel("Time")
     plt.ylabel("Equity ($)")
     plt.title("Backtest Equity Curve")
