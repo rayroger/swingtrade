@@ -117,7 +117,35 @@ def run_backtest():
 
         hist_data[symbol] = df
 
+    # Use only timestamps common to all symbols to avoid KeyError when hourly
+    # data differs across tickers (e.g. one symbol missing a bar).
     timestamps = hist_data[symbols[0]].index
+    for s in symbols[1:]:
+        timestamps = timestamps.intersection(hist_data[s].index)
+
+    # Equity snapshot including unrealized P&L for all open positions.
+    # Defined once here (not inside the loop) and called with the current bar's
+    # timestamp so it always reflects the latest close prices.
+    def _equity_snapshot(t):
+        snap = equity
+        for s, p in positions.items():
+            if p["qty"] > 0:
+                snap += p["qty"] * (hist_data[s].loc[t]["close"] - p["entry_price"])
+        return snap
+
+    def _close_position(symbol, t, exec_price, exit_reason):
+        """Close an open position, update equity, and record the trade."""
+        nonlocal equity
+        p = positions[symbol]
+        pnl = p["qty"] * (exec_price - p["entry_price"]) - commission_per_trade
+        equity += pnl
+        portfolio["trades"].append({
+            "timestamp": t, "symbol": symbol, "action": "SELL",
+            "price": exec_price, "qty": p["qty"], "pnl": pnl,
+            "exit_reason": exit_reason,
+        })
+        positions[symbol] = {"qty": 0, "entry_price": 0, "peak_price": 0, "entry_bar_idx": -1}
+
     current_day = None
     day_start_equity = equity
 
@@ -128,17 +156,9 @@ def run_backtest():
             current_day = t_date
             day_start_equity = equity
 
-        # Update equity curve snapshot (always, even when trading is halted)
-        def _equity_snapshot():
-            snap = equity
-            for s, p in positions.items():
-                if p["qty"] > 0:
-                    snap += p["qty"] * hist_data[s].loc[t]["close"] - p["qty"] * p["entry_price"]
-            return snap
-
         # Halt trading for rest of day if max daily loss is breached
         if max_daily_loss and day_start_equity > 0 and (day_start_equity - equity) / day_start_equity >= max_daily_loss:
-            portfolio["equity_curve"].append({"timestamp": t, "equity": _equity_snapshot()})
+            portfolio["equity_curve"].append({"timestamp": t, "equity": _equity_snapshot(t)})
             continue
 
         # Compute trend scores; skip timestamps where indicators are not yet ready (NaN)
@@ -156,7 +176,7 @@ def run_backtest():
                 last_row = row
 
         if best_symbol is None or best_score <= 0:
-            portfolio["equity_curve"].append({"timestamp": t, "equity": equity})
+            portfolio["equity_curve"].append({"timestamp": t, "equity": _equity_snapshot(t)})
             continue
 
         # --- Trailing stop: check all open positions before generating new signal ---
@@ -173,18 +193,8 @@ def run_backtest():
                 if current_price < p["peak_price"] * (1 - trailing_stop_pct):
                     exits.append((symbol, current_price))
             for symbol, exit_price in exits:
-                p = positions[symbol]
                 exec_price = exit_price * (1 - slippage_pct)
-                pnl = p["qty"] * (exec_price - p["entry_price"]) - commission_per_trade
-                equity += pnl
-                portfolio["trades"].append({
-                    "timestamp": t, "symbol": symbol, "action": "SELL",
-                    "price": exec_price, "qty": p["qty"], "pnl": pnl,
-                    "exit_reason": "trailing_stop",
-                })
-                positions[symbol] = {"qty": 0, "entry_price": 0, "peak_price": 0, "entry_bar_idx": -1}
-
-        # Check position and generate signal
+                _close_position(symbol, t, exec_price, "trailing_stop")
         pos = positions.get(best_symbol, {"qty": 0, "entry_price": 0, "peak_price": 0, "entry_bar_idx": -1})
         signal = generate_signal(last_row, 1 if pos["qty"] > 0 else 0,
                                  momentum_threshold=momentum_threshold)
@@ -198,6 +208,14 @@ def run_backtest():
 
         # Execute virtual trade
         if signal == "BUY" and pos["qty"] == 0:
+            # Rotation: close any open positions in other symbols before
+            # entering the new best symbol (this is a single-asset rotation
+            # strategy; holding multiple symbols simultaneously is unintended).
+            for sym, p in list(positions.items()):
+                if sym != best_symbol and p["qty"] > 0:
+                    close_price = hist_data[sym].loc[t]["close"] * (1 - slippage_pct)
+                    _close_position(sym, t, close_price, "rotation")
+
             exec_price = last_row["close"] * (1 + slippage_pct)
             qty = int(equity * risk_per_trade / exec_price)
             if qty > 0:
@@ -214,30 +232,16 @@ def run_backtest():
                 })
         elif signal == "SELL" and pos["qty"] > 0:
             exec_price = last_row["close"] * (1 - slippage_pct)
-            pnl = pos["qty"] * (exec_price - pos["entry_price"]) - commission_per_trade
-            equity += pnl
-            portfolio["trades"].append({
-                "timestamp": t, "symbol": best_symbol, "action": "SELL",
-                "price": exec_price, "qty": pos["qty"], "pnl": pnl,
-                "exit_reason": "signal",
-            })
-            positions[best_symbol] = {"qty": 0, "entry_price": 0, "peak_price": 0, "entry_bar_idx": -1}
+            _close_position(best_symbol, t, exec_price, "signal")
 
-        portfolio["equity_curve"].append({"timestamp": t, "equity": _equity_snapshot()})
+        portfolio["equity_curve"].append({"timestamp": t, "equity": _equity_snapshot(t)})
 
     # Close any remaining open positions at the last available price
     for symbol, p in list(positions.items()):
         if p["qty"] > 0:
             last_close = hist_data[symbol].iloc[-1]["close"]
             exec_price = last_close * (1 - slippage_pct)
-            pnl = p["qty"] * (exec_price - p["entry_price"]) - commission_per_trade
-            equity += pnl
-            portfolio["trades"].append({
-                "timestamp": timestamps[-1], "symbol": symbol, "action": "SELL",
-                "price": exec_price, "qty": p["qty"], "pnl": pnl,
-                "exit_reason": "end_of_backtest",
-            })
-            positions[symbol] = {"qty": 0, "entry_price": 0, "peak_price": 0, "entry_bar_idx": -1}
+            _close_position(symbol, timestamps[-1], exec_price, "end_of_backtest")
 
     eq_df = pd.DataFrame(portfolio["equity_curve"])
     eq_df.set_index("timestamp", inplace=True)
