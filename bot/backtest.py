@@ -78,52 +78,112 @@ def run_backtest():
     initial_equity = 10000
     equity = initial_equity
     risk_per_trade = cfg["risk_per_trade"]
+    momentum_threshold = cfg.get("momentum_threshold", 0.005)
+    use_trailing_stop = cfg.get("use_trailing_stop", False)
+    trailing_stop_pct = cfg.get("trailing_stop_pct", 0.01)
+    max_daily_loss = cfg.get("max_daily_loss", None)
 
     portfolio = {"equity_curve": [], "trades": []}
+    # positions: {symbol: {"qty": int, "entry_price": float, "peak_price": float}}
     positions = {}
 
     # Fetch historical data
     hist_data = {}
-    
+
     for symbol in symbols:
         df = download_data(symbol)
-    
+
         # normalize column names
         df.columns = [c.lower() for c in df.columns]
-    
+
         df = compute_indicators(
             df,
             cfg["sma_short"],
             cfg["sma_long"],
             cfg["momentum_period"]
         )
-    
+
         hist_data[symbol] = df
 
     timestamps = hist_data[symbols[0]].index
+    current_day = None
+    day_start_equity = equity
+
     for t in timestamps:
-        # Compute trend scores
+        # Track daily starting equity for max daily loss check
+        t_date = pd.Timestamp(t).date()
+        if t_date != current_day:
+            current_day = t_date
+            day_start_equity = equity
+
+        # Update equity curve snapshot (always, even when trading is halted)
+        def _equity_snapshot():
+            snap = equity
+            for s, p in positions.items():
+                if p["qty"] > 0:
+                    snap += p["qty"] * hist_data[s].loc[t]["close"] - p["qty"] * p["entry_price"]
+            return snap
+
+        # Halt trading for rest of day if max daily loss is breached
+        if max_daily_loss and day_start_equity > 0 and (day_start_equity - equity) / day_start_equity >= max_daily_loss:
+            portfolio["equity_curve"].append({"timestamp": t, "equity": _equity_snapshot()})
+            continue
+
+        # Compute trend scores; skip timestamps where indicators are not yet ready (NaN)
         best_score = None
         best_symbol = None
+        last_row = None
         for symbol in symbols:
             row = hist_data[symbol].loc[t]
+            if pd.isna(row["SMA_long"]) or pd.isna(row["momentum"]):
+                continue
             score = trend_score(row)
             if best_score is None or score > best_score:
                 best_score = score
                 best_symbol = symbol
                 last_row = row
 
-        # Check position
-        pos = positions.get(best_symbol, {"qty": 0, "entry_price": 0})
-        signal = generate_signal(last_row, 1 if pos["qty"] > 0 else 0)
+        if best_symbol is None:
+            portfolio["equity_curve"].append({"timestamp": t, "equity": equity})
+            continue
+
+        # --- Trailing stop: check all open positions before generating new signal ---
+        if use_trailing_stop:
+            exits = []
+            for symbol, p in positions.items():
+                if p["qty"] == 0:
+                    continue
+                current_price = hist_data[symbol].loc[t]["close"]
+                # Advance peak price upward
+                if current_price > p["peak_price"]:
+                    p["peak_price"] = current_price
+                # Trigger trailing stop exit
+                if current_price < p["peak_price"] * (1 - trailing_stop_pct):
+                    exits.append((symbol, current_price))
+            for symbol, exit_price in exits:
+                p = positions[symbol]
+                pnl = p["qty"] * (exit_price - p["entry_price"])
+                equity += pnl
+                portfolio["trades"].append({
+                    "timestamp": t, "symbol": symbol, "action": "SELL",
+                    "price": exit_price, "qty": p["qty"], "pnl": pnl,
+                    "exit_reason": "trailing_stop",
+                })
+                positions[symbol] = {"qty": 0, "entry_price": 0, "peak_price": 0}
+
+        # Check position and generate signal
+        pos = positions.get(best_symbol, {"qty": 0, "entry_price": 0, "peak_price": 0})
+        signal = generate_signal(last_row, 1 if pos["qty"] > 0 else 0,
+                                 momentum_threshold=momentum_threshold)
 
         # Execute virtual trade
         if signal == "BUY" and pos["qty"] == 0:
             qty = max(1, int(equity * risk_per_trade / last_row["close"]))
-            positions[best_symbol] = {"qty": qty, "entry_price": last_row["close"]}
+            entry_price = last_row["close"]
+            positions[best_symbol] = {"qty": qty, "entry_price": entry_price, "peak_price": entry_price}
             portfolio["trades"].append({
                 "timestamp": t, "symbol": best_symbol, "action": "BUY",
-                "price": last_row["close"], "qty": qty
+                "price": entry_price, "qty": qty,
             })
         elif signal == "SELL" and pos["qty"] > 0:
             exit_price = last_row["close"]
@@ -131,23 +191,26 @@ def run_backtest():
             equity += pnl
             portfolio["trades"].append({
                 "timestamp": t, "symbol": best_symbol, "action": "SELL",
-                "price": exit_price, "qty": pos["qty"], "pnl": pnl
+                "price": exit_price, "qty": pos["qty"], "pnl": pnl,
+                "exit_reason": "signal",
             })
-            positions[best_symbol] = {"qty": 0, "entry_price": 0}
+            positions[best_symbol] = {"qty": 0, "entry_price": 0, "peak_price": 0}
 
-        # Update equity curve
-        equity_snapshot = equity
-        for s, p in positions.items():
-            equity_snapshot += p["qty"] * hist_data[s].loc[t]["close"] - p["qty"] * p["entry_price"]
-        portfolio["equity_curve"].append({"timestamp": t, "equity": equity_snapshot})
+        portfolio["equity_curve"].append({"timestamp": t, "equity": _equity_snapshot()})
 
     eq_df = pd.DataFrame(portfolio["equity_curve"])
     eq_df.set_index("timestamp", inplace=True)
 
-    trades_df = pd.DataFrame(portfolio["trades"])
-    wins = trades_df[trades_df.get("pnl", 0) > 0].shape[0]
-    losses = trades_df[trades_df.get("pnl", 0) <= 0].shape[0]
-    win_rate = wins / max(1, wins + losses)
+    # Metrics — handle case with no trades or no SELL trades
+    trades_df = pd.DataFrame(portfolio["trades"]) if portfolio["trades"] else pd.DataFrame(columns=["action", "pnl"])
+    if "pnl" in trades_df.columns and "action" in trades_df.columns:
+        sell_pnl = trades_df.loc[trades_df["action"] == "SELL", "pnl"].dropna()
+        wins = int((sell_pnl > 0).sum())
+        total_sells = len(sell_pnl)
+    else:
+        wins = 0
+        total_sells = 0
+    win_rate = wins / max(1, total_sells)
     max_drawdown = ((eq_df["equity"].cummax() - eq_df["equity"]) / eq_df["equity"].cummax()).max()
 
     print(f"Final Equity: {equity:.2f}")
@@ -156,7 +219,7 @@ def run_backtest():
     print(f"Max Drawdown: {max_drawdown*100:.2f}%")
 
     # Plot equity curve
-    plt.figure(figsize=(12,6))
+    plt.figure(figsize=(12, 6))
     plt.plot(eq_df.index, eq_df["equity"], label="Equity Curve")
     plt.xlabel("Time")
     plt.ylabel("Equity ($)")
