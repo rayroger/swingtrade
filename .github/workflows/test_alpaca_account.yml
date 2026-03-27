@@ -1,0 +1,29 @@
+name: Alpaca Account Integration Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-alpaca-account:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt pytest
+
+      - name: Run Alpaca account tests
+        run: pytest tests/test_alpaca_account.py -v
+        env:
+          ALPACA_ENDPOINT: ${{ secrets.ALPACA_ENDPOINT }}
+          ALPACA_KEY: ${{ secrets.ALPACA_KEY }}
+          ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
