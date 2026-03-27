@@ -88,6 +88,17 @@ def _indicators_ready(row):
     return not (pd.isna(row["SMA_long"]) or pd.isna(row["momentum"]) or pd.isna(row.get("volatility", float("nan"))))
 
 
+def _sym_param(cfg, symbol, key, default=None):
+    """Return the per-symbol override for *key*, falling back to the global
+    config value, and finally to *default* if neither is present."""
+    overrides = cfg.get("symbol_config", {}).get(symbol, {})
+    if key in overrides:
+        return overrides[key]
+    if key in cfg:
+        return cfg[key]
+    return default
+
+
 def run_backtest():
     """
     Runs backtest for all symbols using config settings.
@@ -106,16 +117,12 @@ def run_backtest():
     symbols = cfg["symbols"]
     initial_equity = 10000
     equity = initial_equity
-    risk_per_trade = cfg["risk_per_trade"]
-    momentum_threshold = cfg.get("momentum_threshold", 0.005)
     use_trailing_stop = cfg.get("use_trailing_stop", False)
-    trailing_stop_pct = cfg.get("trailing_stop_pct", 0.01)
     max_daily_loss = cfg.get("max_daily_loss", None)
     backtest_start = cfg.get("backtest_start", "2022-01-01")
     backtest_end = cfg.get("backtest_end", "2025-12-31")
     commission_per_trade = cfg.get("commission_per_trade", 0.0)
     slippage_pct = cfg.get("slippage_pct", 0.0)
-    min_holding_bars = cfg.get("min_holding_bars", 0)
 
     portfolio = {"equity_curve": [], "trades": []}
     # positions: {symbol: {"qty": int, "entry_price": float, "peak_price": float, "entry_bar_idx": int}}
@@ -132,9 +139,9 @@ def run_backtest():
 
         df = compute_indicators(
             df,
-            cfg["sma_short"],
-            cfg["sma_long"],
-            cfg["momentum_period"]
+            _sym_param(cfg, symbol, "sma_short", 10),
+            _sym_param(cfg, symbol, "sma_long", 50),
+            _sym_param(cfg, symbol, "momentum_period", 10),
         )
 
         hist_data[symbol] = df
@@ -208,24 +215,27 @@ def run_backtest():
                 if p["qty"] == 0:
                     continue
                 current_price = hist_data[symbol].loc[t]["close"]
+                sym_trailing_stop_pct = _sym_param(cfg, symbol, "trailing_stop_pct", 0.03)
                 # Advance peak price upward
                 if current_price > p["peak_price"]:
                     p["peak_price"] = current_price
                 # Trigger trailing stop exit
-                if current_price < p["peak_price"] * (1 - trailing_stop_pct):
+                if current_price < p["peak_price"] * (1 - sym_trailing_stop_pct):
                     exits.append((symbol, current_price))
             for symbol, exit_price in exits:
                 exec_price = exit_price * (1 - slippage_pct)
                 _close_position(symbol, t, exec_price, "trailing_stop")
         pos = positions.get(best_symbol, {"qty": 0, "entry_price": 0, "peak_price": 0, "entry_bar_idx": -1})
+        sym_momentum_threshold = _sym_param(cfg, best_symbol, "momentum_threshold", 0.005)
         signal = generate_signal(last_row, 1 if pos["qty"] > 0 else 0,
-                                 momentum_threshold=momentum_threshold)
+                                 momentum_threshold=sym_momentum_threshold)
 
         # Suppress signal-based SELL until minimum holding period is satisfied
         # (trailing stop always fires regardless, handled above)
         if signal == "SELL" and pos["qty"] > 0:
             bars_held = bar_idx - pos.get("entry_bar_idx", bar_idx)
-            if bars_held < min_holding_bars:
+            sym_min_holding_bars = _sym_param(cfg, best_symbol, "min_holding_bars", 0)
+            if bars_held < sym_min_holding_bars:
                 signal = None
 
         # Execute virtual trade
@@ -239,7 +249,8 @@ def run_backtest():
                     _close_position(sym, t, close_price, "rotation")
 
             exec_price = last_row["close"] * (1 + slippage_pct)
-            qty = int(equity * risk_per_trade / exec_price)
+            sym_risk_per_trade = _sym_param(cfg, best_symbol, "risk_per_trade", 0.05)
+            qty = int(equity * sym_risk_per_trade / exec_price)
             if qty > 0:
                 equity -= commission_per_trade
                 positions[best_symbol] = {

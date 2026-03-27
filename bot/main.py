@@ -14,6 +14,18 @@ mode = os.environ.get("BOT_MODE") or cfg.get("mode", "live")
 
 print(f"Running bot in mode: {mode}")
 
+
+def _sym_param(symbol, key, default=None):
+    """Return the per-symbol override for *key*, falling back to the global
+    config value, and finally to *default* if neither is present."""
+    overrides = cfg.get("symbol_config", {}).get(symbol, {})
+    if key in overrides:
+        return overrides[key]
+    if key in cfg:
+        return cfg[key]
+    return default
+
+
 if mode == "backtest":
     from bot.backtest import run_backtest
     run_backtest()
@@ -31,10 +43,6 @@ else:
     symbols = cfg["symbols"]
     alpaca_key = os.environ["ALPACA_KEY"]
     alpaca_secret = os.environ["ALPACA_SECRET"]
-
-    # Configurable strategy params
-    momentum_threshold = cfg.get("momentum_threshold", 0.005)
-
 
     # Connect to Alpaca using API key + secret
     trading_client = TradingClient(api_key=alpaca_key, secret_key=alpaca_secret, paper=True)
@@ -68,7 +76,12 @@ else:
         if isinstance(bars.index, pd.MultiIndex):
             bars = bars.xs(symbol, level="symbol")
 
-        bars = compute_indicators(bars, cfg["sma_short"], cfg["sma_long"], cfg["momentum_period"])
+        bars = compute_indicators(
+            bars,
+            _sym_param(symbol, "sma_short", 10),
+            _sym_param(symbol, "sma_long", 50),
+            _sym_param(symbol, "momentum_period", 10),
+        )
         last = bars.iloc[-1]
         score = trend_score(last)
 
@@ -82,16 +95,17 @@ else:
     print(f"Best symbol + score: {best_symbol} | {best_score}")
 
     if best_last_row is not None:
+        sym_momentum_threshold = _sym_param(best_symbol, "momentum_threshold", 0.005)
         print(
             "Decision inputs | "
             f"close={float(best_last_row['close'])} | "
             f"SMA_long={float(best_last_row['SMA_long'])} | "
             f"momentum={float(best_last_row['momentum'])} | "
-            f"momentum_threshold={float(momentum_threshold)} | "
+            f"momentum_threshold={float(sym_momentum_threshold)} | "
             f"position={best_current_position}"
         )
 
-        signal = generate_signal(best_last_row, best_current_position, momentum_threshold=momentum_threshold)
+        signal = generate_signal(best_last_row, best_current_position, momentum_threshold=sym_momentum_threshold)
         print(f"Final signal: {signal}")
 
         if signal is None:
@@ -99,7 +113,8 @@ else:
 
         # Execute trade
         if signal == "BUY":
-            qty = max(1, int(equity * cfg["risk_per_trade"] / best_last_row["close"]))
+            sym_risk_per_trade = _sym_param(best_symbol, "risk_per_trade", 0.05)
+            qty = max(1, int(equity * sym_risk_per_trade / best_last_row["close"]))
             order = MarketOrderRequest(
                 symbol=best_symbol,
                 qty=qty,
