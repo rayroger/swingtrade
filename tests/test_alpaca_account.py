@@ -1,28 +1,35 @@
 """
-Integration test: connect to Alpaca and verify account properties.
+Unit tests for Alpaca account integration helpers.
 
-Requires environment variables:
-  ALPACA_ENDPOINT  – base URL, e.g. https://paper-api.alpaca.markets
-  ALPACA_KEY       – Alpaca API key ID
-  ALPACA_SECRET    – Alpaca API secret key
+These tests use mocks so they do not require live credentials or network access.
 """
-import os
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 from alpaca.trading.client import TradingClient
 
 
-@pytest.fixture(scope="module")
+_ACCOUNT = SimpleNamespace(
+    account_number="PA1234567890",
+    status="ACTIVE",
+    equity="12345.67",
+    cash="5000.00",
+    buying_power="10000.00",
+)
+
+_POSITIONS = [
+    SimpleNamespace(symbol="AAPL", qty="10", market_value="1750.00"),
+    SimpleNamespace(symbol="TSLA", qty="5", market_value="900.00"),
+]
+
+
+@pytest.fixture
 def trading_client():
-    api_key = os.environ["ALPACA_KEY"]
-    secret_key = os.environ["ALPACA_SECRET"]
-    endpoint = os.environ.get("ALPACA_ENDPOINT", "")
-
-    kwargs = dict(api_key=api_key, secret_key=secret_key)
-    if endpoint:
-        kwargs["url_override"] = endpoint
-
-    return TradingClient(**kwargs)
+    client = MagicMock(spec=TradingClient)
+    client.get_account.return_value = _ACCOUNT
+    client.get_all_positions.return_value = _POSITIONS
+    return client
 
 
 def test_account_identity(trading_client):
