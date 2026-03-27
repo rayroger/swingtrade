@@ -38,6 +38,7 @@ else:
 
     account = trading_client.get_account()
     equity = float(account.equity)
+    print(f"Connected to Alpaca | Account: {account.account_number} | Status: {account.status} | Equity: ${equity:,.2f} | Cash: ${float(account.cash):,.2f} | Buying power: ${float(account.buying_power):,.2f}")
 
     positions = {p.symbol: int(float(p.qty)) for p in trading_client.get_all_positions()}  # qty is returned as a decimal string
 
