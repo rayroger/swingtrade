@@ -91,31 +91,31 @@ else:
             f"position={best_current_position}"
         )
 
-    signal = generate_signal(last_row, current_position, momentum_threshold=momentum_threshold)
-    print(f"Final signal: {signal}")
+        signal = generate_signal(best_last_row, best_current_position, momentum_threshold=momentum_threshold)
+        print(f"Final signal: {signal}")
 
-    if signal is None:
-        print("No trade")
+        if signal is None:
+            print("No trade")
 
-    # Execute trade
-    if signal == "BUY":
-        qty = max(1, int(equity * cfg["risk_per_trade"] / best_last_row["close"]))
-        order = MarketOrderRequest(
-            symbol=best_symbol,
-            qty=qty,
-            side=OrderSide.BUY,
-            time_in_force=TimeInForce.GTC
-        )
-        trading_client.submit_order(order_data=order)
-        log_trade(best_symbol, "BUY", best_last_row["close"], qty, equity)
+        # Execute trade
+        if signal == "BUY":
+            qty = max(1, int(equity * cfg["risk_per_trade"] / best_last_row["close"]))
+            order = MarketOrderRequest(
+                symbol=best_symbol,
+                qty=qty,
+                side=OrderSide.BUY,
+                time_in_force=TimeInForce.GTC
+            )
+            trading_client.submit_order(order_data=order)
+            log_trade(best_symbol, "BUY", best_last_row["close"], qty, equity)
 
-    elif signal == "SELL" and best_symbol in positions:
-        qty = positions[best_symbol]
-        order = MarketOrderRequest(
-            symbol=best_symbol,
-            qty=qty,
-            side=OrderSide.SELL,
-            time_in_force=TimeInForce.GTC
-        )
-        trading_client.submit_order(order_data=order)
-        log_trade(best_symbol, "SELL", best_last_row["close"], qty, equity)
+        elif signal == "SELL" and best_symbol in positions:
+            qty = positions[best_symbol]
+            order = MarketOrderRequest(
+                symbol=best_symbol,
+                qty=qty,
+                side=OrderSide.SELL,
+                time_in_force=TimeInForce.GTC
+            )
+            trading_client.submit_order(order_data=order)
+            log_trade(best_symbol, "SELL", best_last_row["close"], qty, equity)
