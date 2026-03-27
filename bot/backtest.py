@@ -1,7 +1,11 @@
 import time
+from datetime import datetime, timedelta
 import numpy as np
 import pandas as pd
 import yfinance as yf
+
+# yfinance only provides 1h data within the last 730 days.
+_MAX_HOURLY_DAYS = 730
 
 
 def _flatten_columns(df):
@@ -11,10 +15,24 @@ def _flatten_columns(df):
     return df
 
 
-def _generate_synthetic_data(symbol, periods=500):
+def _select_interval(start, end):
+    """Return the finest yfinance interval that fits within its data limits.
+
+    - "1h"  — available only for the last 730 days
+    - "1d"  — available for any historical range
+    """
+    start_dt = datetime.strptime(start, "%Y-%m-%d")
+    end_dt = datetime.strptime(end, "%Y-%m-%d")
+    cutoff = datetime.now() - timedelta(days=_MAX_HOURLY_DAYS)
+    if start_dt >= cutoff and (end_dt - start_dt).days <= _MAX_HOURLY_DAYS:
+        return "1h"
+    return "1d"
+
+
+def _generate_synthetic_data(symbol, periods=500, freq="h"):
     """Generate synthetic OHLCV data for CI/testing when live download fails."""
     np.random.seed(abs(hash(symbol)) % (2**32))
-    dates = pd.date_range(start="2025-01-01", periods=periods, freq="h")
+    dates = pd.date_range(start="2025-01-01", periods=periods, freq=freq)
     close = 400.0 * np.exp(np.cumsum(np.random.normal(0, 0.005, periods)))
     high = close * (1 + np.abs(np.random.normal(0, 0.003, periods)))
     low = close * (1 - np.abs(np.random.normal(0, 0.003, periods)))
@@ -27,6 +45,9 @@ def _generate_synthetic_data(symbol, periods=500):
 
 
 def download_data(symbol, start="2022-01-01", end="2025-12-31"):
+    interval = _select_interval(start, end)
+    print(f"[{symbol}] Using interval={interval!r} for range {start} -> {end}")
+
     # Try yf.download first
     for attempt in range(3):
         try:
@@ -34,7 +55,7 @@ def download_data(symbol, start="2022-01-01", end="2025-12-31"):
                 symbol,
                 start=start,
                 end=end,
-                interval="1h",
+                interval=interval,
                 progress=False,
                 auto_adjust=True,
             )
@@ -49,7 +70,7 @@ def download_data(symbol, start="2022-01-01", end="2025-12-31"):
     # Fallback: try yf.Ticker().history()
     try:
         ticker = yf.Ticker(symbol)
-        df = ticker.history(start=start, end=end, interval="1h", auto_adjust=True)
+        df = ticker.history(start=start, end=end, interval=interval, auto_adjust=True)
         df = _flatten_columns(df)
         if df is not None and not df.empty:
             print(f"[{symbol}] Downloaded {len(df)} bars from yfinance (Ticker.history)")
@@ -59,7 +80,8 @@ def download_data(symbol, start="2022-01-01", end="2025-12-31"):
 
     # Final fallback: synthetic data (for CI / offline environments)
     print(f"[{symbol}] WARNING: Using synthetic data (yfinance unavailable)")
-    return _generate_synthetic_data(symbol)
+    synthetic_freq = "h" if interval == "1h" else "D"
+    return _generate_synthetic_data(symbol, freq=synthetic_freq)
 
 def _indicators_ready(row):
     """Return True only when all required indicators have been computed (no NaNs)."""
