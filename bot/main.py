@@ -30,10 +30,11 @@ else:
 
     symbols = cfg["symbols"]
     alpaca_key = os.environ["ALPACA_KEY"]
+    alpaca_secret = os.environ["ALPACA_SECRET"]
 
-    # Connect to Alpaca using a single API key (oauth token)
-    trading_client = TradingClient(oauth_token=alpaca_key, paper=True)
-    data_client = StockHistoricalDataClient(oauth_token=alpaca_key)
+    # Connect to Alpaca using API key + secret
+    trading_client = TradingClient(api_key=alpaca_key, secret_key=alpaca_secret, paper=True)
+    data_client = StockHistoricalDataClient(api_key=alpaca_key, secret_key=alpaca_secret)
 
     account = trading_client.get_account()
     equity = float(account.equity)
