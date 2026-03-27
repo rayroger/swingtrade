@@ -22,7 +22,7 @@ jobs:
         run: pip install -r requirements.txt pytest
 
       - name: Run Alpaca account tests
-        run: pytest tests/test_alpaca_account.py -v
+        run: pytest tests/test_alpaca_account.py -v -s
         env:
           ALPACA_ENDPOINT: ${{ secrets.ALPACA_ENDPOINT }}
           ALPACA_KEY: ${{ secrets.ALPACA_KEY }}
