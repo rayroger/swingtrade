@@ -10,8 +10,20 @@ sma_long: 50
 momentum_period: 10
 momentum_threshold: 0.005
 
-risk_per_trade: 0.10
+risk_per_trade: 0.05
 max_daily_loss: 0.03
 
 use_trailing_stop: true
 trailing_stop_pct: 0.03
+
+# Backtest date window (YYYY-MM-DD)
+backtest_start: "2022-01-01"
+backtest_end: "2025-12-31"
+
+# Friction costs (applied on every buy and every sell)
+commission_per_trade: 1.00   # dollars per side
+slippage_pct: 0.0005         # 0.05% of execution price
+
+# Minimum bars to hold a position before a signal-based exit is allowed
+# (trailing stop always fires regardless)
+min_holding_bars: 4
