@@ -40,6 +40,7 @@ def download_data(symbol):
             )
             df = _flatten_columns(df)
             if df is not None and not df.empty:
+                print(f"[{symbol}] Downloaded {len(df)} bars from yfinance (yf.download)")
                 return df
         except Exception as e:
             print(f"Download failed for {symbol}, retry {attempt+1}: {e}")
@@ -51,12 +52,13 @@ def download_data(symbol):
         df = ticker.history(start="2025-01-01", end="2025-12-31", interval="1h", auto_adjust=True)
         df = _flatten_columns(df)
         if df is not None and not df.empty:
+            print(f"[{symbol}] Downloaded {len(df)} bars from yfinance (Ticker.history)")
             return df
     except Exception as e:
         print(f"Ticker history fallback failed for {symbol}: {e}")
 
     # Final fallback: synthetic data (for CI / offline environments)
-    print(f"Using synthetic data for {symbol}")
+    print(f"[{symbol}] WARNING: Using synthetic data (yfinance unavailable)")
     return _generate_synthetic_data(symbol)
 
 def run_backtest():
@@ -143,7 +145,7 @@ def run_backtest():
                 best_symbol = symbol
                 last_row = row
 
-        if best_symbol is None:
+        if best_symbol is None or best_score <= 0:
             portfolio["equity_curve"].append({"timestamp": t, "equity": equity})
             continue
 
@@ -178,13 +180,14 @@ def run_backtest():
 
         # Execute virtual trade
         if signal == "BUY" and pos["qty"] == 0:
-            qty = max(1, int(equity * risk_per_trade / last_row["close"]))
-            entry_price = last_row["close"]
-            positions[best_symbol] = {"qty": qty, "entry_price": entry_price, "peak_price": entry_price}
-            portfolio["trades"].append({
-                "timestamp": t, "symbol": best_symbol, "action": "BUY",
-                "price": entry_price, "qty": qty,
-            })
+            qty = int(equity * risk_per_trade / last_row["close"])
+            if qty > 0:
+                entry_price = last_row["close"]
+                positions[best_symbol] = {"qty": qty, "entry_price": entry_price, "peak_price": entry_price}
+                portfolio["trades"].append({
+                    "timestamp": t, "symbol": best_symbol, "action": "BUY",
+                    "price": entry_price, "qty": qty,
+                })
         elif signal == "SELL" and pos["qty"] > 0:
             exit_price = last_row["close"]
             pnl = pos["qty"] * (exit_price - pos["entry_price"])
@@ -198,25 +201,55 @@ def run_backtest():
 
         portfolio["equity_curve"].append({"timestamp": t, "equity": _equity_snapshot()})
 
+    # Close any remaining open positions at the last available price
+    for symbol, p in list(positions.items()):
+        if p["qty"] > 0:
+            last_price = hist_data[symbol].iloc[-1]["close"]
+            pnl = p["qty"] * (last_price - p["entry_price"])
+            equity += pnl
+            portfolio["trades"].append({
+                "timestamp": timestamps[-1], "symbol": symbol, "action": "SELL",
+                "price": last_price, "qty": p["qty"], "pnl": pnl,
+                "exit_reason": "end_of_backtest",
+            })
+            positions[symbol] = {"qty": 0, "entry_price": 0, "peak_price": 0}
+
     eq_df = pd.DataFrame(portfolio["equity_curve"])
     eq_df.set_index("timestamp", inplace=True)
 
     # Metrics — handle case with no trades or no SELL trades
     trades_df = pd.DataFrame(portfolio["trades"]) if portfolio["trades"] else pd.DataFrame(columns=["action", "pnl"])
     if "pnl" in trades_df.columns and "action" in trades_df.columns:
-        sell_pnl = trades_df.loc[trades_df["action"] == "SELL", "pnl"].dropna()
+        sell_trades = trades_df.loc[trades_df["action"] == "SELL"]
+        sell_pnl = sell_trades["pnl"].dropna()
         wins = int((sell_pnl > 0).sum())
         total_sells = len(sell_pnl)
+        total_buys = int((trades_df["action"] == "BUY").sum())
     else:
         wins = 0
         total_sells = 0
+        total_buys = 0
     win_rate = wins / max(1, total_sells)
     max_drawdown = ((eq_df["equity"].cummax() - eq_df["equity"]) / eq_df["equity"].cummax()).max()
 
-    print(f"Final Equity: {equity:.2f}")
-    print(f"Total Trades: {len(trades_df)}")
-    print(f"Win Rate: {win_rate*100:.2f}%")
+    print(f"\n--- Backtest Results ---")
+    print(f"Final Equity: {equity:.2f}  (return: {(equity - initial_equity) / initial_equity * 100:.2f}%)")
+    print(f"Trades: {total_buys} buys, {total_sells} sells ({min(total_buys, total_sells)} completed buy-sell pairs)")
+    print(f"Win Rate: {win_rate*100:.2f}%  ({wins} winning / {total_sells} closed trades)")
     print(f"Max Drawdown: {max_drawdown*100:.2f}%")
+
+    # Per-symbol breakdown
+    if "symbol" in trades_df.columns and "action" in trades_df.columns:
+        print("\n--- Per-Symbol Summary ---")
+        for sym in symbols:
+            sym_sells = trades_df.loc[(trades_df["symbol"] == sym) & (trades_df["action"] == "SELL")]
+            sym_pnl = sym_sells["pnl"].dropna()
+            sym_wins = int((sym_pnl > 0).sum())
+            print(
+                f"  {sym}: {len(sym_pnl)} closed trades | "
+                f"P&L: {sym_pnl.sum():.2f} | "
+                f"Win rate: {sym_wins / max(1, len(sym_pnl)) * 100:.0f}%"
+            )
 
     # Plot equity curve
     plt.figure(figsize=(12, 6))
