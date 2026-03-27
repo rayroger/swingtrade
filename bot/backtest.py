@@ -61,6 +61,11 @@ def download_data(symbol):
     print(f"[{symbol}] WARNING: Using synthetic data (yfinance unavailable)")
     return _generate_synthetic_data(symbol)
 
+def _indicators_ready(row):
+    """Return True only when all required indicators have been computed (no NaNs)."""
+    return not (pd.isna(row["SMA_long"]) or pd.isna(row["momentum"]) or pd.isna(row.get("volatility", float("nan"))))
+
+
 def run_backtest():
     """
     Runs backtest for all symbols using config settings.
@@ -137,7 +142,7 @@ def run_backtest():
         last_row = None
         for symbol in symbols:
             row = hist_data[symbol].loc[t]
-            if pd.isna(row["SMA_long"]) or pd.isna(row["momentum"]):
+            if not _indicators_ready(row):
                 continue
             score = trend_score(row)
             if best_score is None or score > best_score:
