@@ -5,6 +5,7 @@ symbols:
   - QQQ
   - TQQQ
 
+# --- Global defaults (used when a symbol has no per-symbol override) ---
 sma_short: 10
 sma_long: 50
 momentum_period: 10
@@ -27,3 +28,43 @@ slippage_pct: 0.0005         # 0.05% of execution price
 # Minimum bars to hold a position before a signal-based exit is allowed
 # (trailing stop always fires regardless)
 min_holding_bars: 4
+
+# --- Per-symbol overrides ---
+# Any key defined here takes precedence over the global default above.
+# Omitted keys fall back to the global value.
+symbol_config:
+  SPY:
+    # Broad market: slow, low-volatility trends — use longer SMAs and a
+    # tighter trailing stop. Fewer shares (3 % risk) since edge is weak.
+    sma_short: 20
+    sma_long: 100
+    momentum_period: 15
+    momentum_threshold: 0.003
+    trailing_stop_pct: 0.02
+    risk_per_trade: 0.03
+    min_holding_bars: 8
+
+  QQQ:
+    # Tech-heavy, moderate volatility — defaults work well but loosen the
+    # trailing stop slightly to give trends room to breathe.
+    sma_short: 10
+    sma_long: 50
+    momentum_period: 10
+    momentum_threshold: 0.005
+    trailing_stop_pct: 0.035
+    risk_per_trade: 0.05
+    min_holding_bars: 4
+
+  TQQQ:
+    # 3× leveraged ETF: fast-moving, high noise — use shorter SMAs to
+    # react quickly, a much wider trailing stop (7 %) to avoid being
+    # shaken out by normal intraday swings, a higher momentum threshold
+    # to filter noise, and a smaller position size (3 % risk) because
+    # the underlying leverage already amplifies every move.
+    sma_short: 5
+    sma_long: 20
+    momentum_period: 8
+    momentum_threshold: 0.015
+    trailing_stop_pct: 0.07
+    risk_per_trade: 0.03
+    min_holding_bars: 2
