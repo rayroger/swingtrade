@@ -91,6 +91,27 @@ else:
             best_last_row = last
             best_current_position = 1 if symbol in positions else 0
 
+    # Regime filter: fetch SPY daily bars to check whether we are in a bull market
+    # (SPY above its sma_regime-day SMA). Block new BUY entries during bear markets.
+    in_bull_regime = True
+    regime_filter = cfg.get("regime_filter", False)
+    sma_regime = cfg.get("sma_regime", 200)
+    if regime_filter and "SPY" in symbols:
+        spy_regime_params = StockBarsRequest(
+            symbol_or_symbols="SPY",
+            timeframe=TimeFrame.Day,
+            limit=sma_regime + 10,
+        )
+        spy_daily = data_client.get_stock_bars(spy_regime_params).df
+        if isinstance(spy_daily.index, pd.MultiIndex):
+            spy_daily = spy_daily.xs("SPY", level="symbol")
+        spy_daily.columns = [c.lower() for c in spy_daily.columns]
+        spy_daily["SMA_regime"] = spy_daily["close"].rolling(sma_regime).mean()
+        spy_last = spy_daily.iloc[-1]
+        if not pd.isna(spy_last["SMA_regime"]) and spy_last["close"] <= spy_last["SMA_regime"]:
+            in_bull_regime = False
+            print(f"Regime filter: SPY ({spy_last['close']:.2f}) below SMA_{sma_regime} ({spy_last['SMA_regime']:.2f}) — no new BUY entries")
+
     # Debug prints requested
     print(f"Best symbol + score: {best_symbol} | {best_score}")
 
@@ -106,6 +127,32 @@ else:
         )
 
         signal = generate_signal(best_last_row, best_current_position, momentum_threshold=sym_momentum_threshold)
+
+        # Apply regime filter: suppress BUY when SPY is in a bear market
+        if signal == "BUY" and not in_bull_regime:
+            signal = None
+
+        # TQQQ secondary filter: only buy 3× leveraged ETF when QQQ is above its SMA_long
+        if signal == "BUY" and best_symbol == "TQQQ" and "QQQ" in symbols:
+            qqq_params = StockBarsRequest(
+                symbol_or_symbols="QQQ",
+                timeframe=TimeFrame.Hour,
+                limit=_sym_param("QQQ", "sma_long", 50) + 10,
+            )
+            qqq_bars = data_client.get_stock_bars(qqq_params).df
+            if isinstance(qqq_bars.index, pd.MultiIndex):
+                qqq_bars = qqq_bars.xs("QQQ", level="symbol")
+            qqq_bars = compute_indicators(
+                qqq_bars,
+                _sym_param("QQQ", "sma_short", 10),
+                _sym_param("QQQ", "sma_long", 50),
+                _sym_param("QQQ", "momentum_period", 10),
+            )
+            qqq_last = qqq_bars.iloc[-1]
+            if not pd.isna(qqq_last["SMA_long"]) and qqq_last["close"] <= qqq_last["SMA_long"]:
+                signal = None
+                print("TQQQ filter: QQQ below its SMA_long — suppressing TQQQ BUY")
+
         print(f"Final signal: {signal}")
 
         if signal is None:
@@ -113,7 +160,7 @@ else:
 
         # Execute trade
         if signal == "BUY":
-            sym_risk_per_trade = _sym_param(best_symbol, "risk_per_trade", 0.05)
+            sym_risk_per_trade = _sym_param(best_symbol, "risk_per_trade", 0.30)
             qty = max(1, int(equity * sym_risk_per_trade / best_last_row["close"]))
             order = MarketOrderRequest(
                 symbol=best_symbol,
