@@ -83,6 +83,12 @@ def download_data(symbol, start="2022-01-01", end="2025-12-31"):
     synthetic_freq = "h" if interval == "1h" else "D"
     return _generate_synthetic_data(symbol, freq=synthetic_freq)
 
+def _is_below_sma(close, sma):
+    """Return True when *close* is at or below *sma*, treating NaN as below
+    (i.e. insufficient history → no entry allowed)."""
+    return pd.isna(sma) or close <= sma
+
+
 def _indicators_ready(row):
     """Return True only when all required indicators have been computed (no NaNs)."""
     return not (pd.isna(row["SMA_long"]) or pd.isna(row["momentum"]) or pd.isna(row.get("volatility", float("nan"))))
@@ -123,10 +129,15 @@ def run_backtest():
     backtest_end = cfg.get("backtest_end", "2025-12-31")
     commission_per_trade = cfg.get("commission_per_trade", 0.0)
     slippage_pct = cfg.get("slippage_pct", 0.0)
+    regime_filter = cfg.get("regime_filter", False)
+    sma_regime = cfg.get("sma_regime", 200)
+    cooldown_bars = cfg.get("cooldown_bars", 0)
 
     portfolio = {"equity_curve": [], "trades": []}
     # positions: {symbol: {"qty": int, "entry_price": float, "peak_price": float, "entry_bar_idx": int}}
     positions = {}
+    # last_exit_bar: {symbol: bar_idx} — records when each symbol last had a closed position
+    last_exit_bar = {}
 
     # Fetch historical data
     hist_data = {}
@@ -145,6 +156,11 @@ def run_backtest():
         )
 
         hist_data[symbol] = df
+
+    # Compute SPY regime SMA (200-day by default) used as a bull/bear market gate.
+    # Only enter new long positions when SPY is trading above this level.
+    if regime_filter and "SPY" in hist_data:
+        hist_data["SPY"]["SMA_regime"] = hist_data["SPY"]["close"].rolling(sma_regime).mean()
 
     # Use only timestamps common to all symbols to avoid KeyError when hourly
     # data differs across tickers (e.g. one symbol missing a bar).
@@ -174,9 +190,13 @@ def run_backtest():
             "exit_reason": exit_reason,
         })
         positions[symbol] = {"qty": 0, "entry_price": 0, "peak_price": 0, "entry_bar_idx": -1}
+        last_exit_bar[symbol] = bar_idx
 
     current_day = None
     day_start_equity = equity
+    # bar_idx is set by enumerate below; initialize here so _close_position
+    # (a closure) has a valid reference even if timestamps is empty.
+    bar_idx = -1
 
     for bar_idx, t in enumerate(timestamps):
         # Track daily starting equity for max daily loss check
@@ -236,6 +256,29 @@ def run_backtest():
             bars_held = bar_idx - pos.get("entry_bar_idx", bar_idx)
             sym_min_holding_bars = _sym_param(cfg, best_symbol, "min_holding_bars", 0)
             if bars_held < sym_min_holding_bars:
+                signal = None
+
+        # Regime filter: block new BUY entries when SPY is below its long-term SMA.
+        # This prevents entering long trades during broad bear-market conditions.
+        # (close == SMA is treated as below — bull regime requires close > SMA.)
+        # Exits and trailing stops are never suppressed by this filter.
+        if signal == "BUY" and regime_filter and "SPY" in hist_data:
+            spy_row = hist_data["SPY"].loc[t]
+            if _is_below_sma(spy_row["close"], spy_row.get("SMA_regime", float("nan"))):
+                signal = None
+
+        # TQQQ secondary filter: only buy the 3× leveraged ETF when QQQ is itself
+        # trading above its own long SMA, i.e. the underlying tech trend is intact.
+        if signal == "BUY" and best_symbol == "TQQQ" and "QQQ" in hist_data:
+            qqq_row = hist_data["QQQ"].loc[t]
+            if _is_below_sma(qqq_row["close"], qqq_row.get("SMA_long", float("nan"))):
+                signal = None
+
+        # Cooldown filter: suppress re-entry into a symbol for cooldown_bars bars
+        # after any exit (stop, signal, or rotation) to avoid whipsaw re-entries.
+        if signal == "BUY" and cooldown_bars > 0:
+            last_exit = last_exit_bar.get(best_symbol, -(cooldown_bars + 1))
+            if bar_idx - last_exit < cooldown_bars:
                 signal = None
 
         # Execute virtual trade

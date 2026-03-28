@@ -11,11 +11,22 @@ sma_long: 50
 momentum_period: 10
 momentum_threshold: 0.005
 
-risk_per_trade: 0.05
+# Position sizing: fraction of current equity to deploy per trade.
+# E.g. 0.30 = allocate 30 % of equity to each position.
+risk_per_trade: 0.30
 max_daily_loss: 0.03
 
 use_trailing_stop: true
 trailing_stop_pct: 0.03
+
+# Regime filter: only allow new BUY entries when SPY is above its
+# sma_regime-day simple moving average (classic bull/bear market gate).
+regime_filter: true
+sma_regime: 200
+
+# Bars to wait after any position exit before re-entering the same symbol.
+# Prevents rapid whipsaw re-entries immediately after a stop-out or signal exit.
+cooldown_bars: 5
 
 # Backtest date window (YYYY-MM-DD)
 backtest_start: "2022-01-01"
@@ -35,36 +46,36 @@ min_holding_bars: 4
 symbol_config:
   SPY:
     # Broad market: slow, low-volatility trends — use longer SMAs and a
-    # tighter trailing stop. Fewer shares (3 % risk) since edge is weak.
+    # tighter trailing stop. 30 % of equity per trade.
     sma_short: 20
     sma_long: 100
     momentum_period: 15
     momentum_threshold: 0.003
     trailing_stop_pct: 0.02
-    risk_per_trade: 0.03
+    risk_per_trade: 0.30
     min_holding_bars: 8
 
   QQQ:
-    # Tech-heavy, moderate volatility — defaults work well but loosen the
-    # trailing stop slightly to give trends room to breathe.
+    # Tech-heavy, moderate volatility — loosen the trailing stop slightly
+    # to give trends room to breathe. 40 % of equity per trade.
     sma_short: 10
     sma_long: 50
     momentum_period: 10
     momentum_threshold: 0.005
     trailing_stop_pct: 0.035
-    risk_per_trade: 0.05
+    risk_per_trade: 0.40
     min_holding_bars: 4
 
   TQQQ:
     # 3× leveraged ETF: fast-moving, high noise — use shorter SMAs to
     # react quickly, a much wider trailing stop (7 %) to avoid being
     # shaken out by normal intraday swings, a higher momentum threshold
-    # to filter noise, and a smaller position size (3 % risk) because
-    # the underlying leverage already amplifies every move.
+    # to filter noise. 20 % of equity per trade (leverage already
+    # amplifies every move). Also requires QQQ > its SMA_long (see backtest).
     sma_short: 5
     sma_long: 20
     momentum_period: 8
     momentum_threshold: 0.015
     trailing_stop_pct: 0.07
-    risk_per_trade: 0.03
+    risk_per_trade: 0.20
     min_holding_bars: 2
